@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import {
   Fn, If, Loop, uniform, instancedArray, instanceIndex,
-  float, vec3, vec4, mix, smoothstep, uv, dot,
+  float, vec3, vec4, mix, smoothstep, uv, dot, mx_noise_float,
 } from 'three/tsl';
 import { Pane } from 'tweakpane';
 import { terrainHeight } from './terrain';
@@ -38,6 +38,8 @@ export interface NBodyDomeParams {
   floorK: number;
   spin: number;
   dispersion: number;
+  flow: number;
+  swirl: number;
   massMin: number;
   massMax: number;
   pointerMode: 'attract' | 'repulse';
@@ -81,11 +83,14 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
     steps: 1,
     paused: false,
     totalMass: 40960,
-    gravity: 0.0000016,
+    // Gravity sized so the *slow* meditative speeds are roughly circular:
+    // clusters form and shear apart instead of everything raining into one
+    // clump at the pole.
+    gravity: 0.0000001,
     // Small timestep + single-ish steps keep world-space motion slow and
     // meditative now that sim units span an 84 m dome.
     dt: 0.008,
-    softening: 0.05,
+    softening: 0.08,
     // The post's pairing: dome spring on, gentle damping so the shell
     // settles instead of ringing forever.
     damping: 0.999,
@@ -93,8 +98,14 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
     shellK: 6,
     shellR: SIM_R,
     floorK: 4,
-    spin: 0.35,
+    spin: 1.0,
     dispersion: 0.04,
+    // Perpetual gentle motion: curl-ish noise stirring + azimuthal breeze
+    // that offsets damping so the dome never freezes or fully collapses.
+    flow: 0.04,
+    // Keep the breeze tiny: its equilibrium speed against damping goes
+    // centrifugal and drains particles to the rim if pushed much higher.
+    swirl: 0.004,
     massMin: 1,
     massMax: 3,
     pointerMode: 'attract',
@@ -129,6 +140,9 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
   const uShellR = uniform(params.shellR);
   const uFloorK = uniform(params.floorK);
   const uPtrSoft = uniform(params.pointerSoftening);
+  const uFlow = uniform(params.flow);
+  const uSwirl = uniform(params.swirl);
+  const uTime = uniform(0);
   const uPtrPos = Array.from({ length: FORCER_SLOTS }, () => uniform(new THREE.Vector3()));
   // One strength per slot, packed into a vec3 uniform (x, y, z = slots 0..2).
   const uPtrG = uniform(new THREE.Vector3());
@@ -206,6 +220,22 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
       If(pos.y.lessThan(0), () => {
         acc.assign(acc.sub(vec3(0, pos.y.mul(uShellK).mul(uFloorK), 0)));
       });
+
+      // Gentle stirring: a noise vector field with its radial component
+      // removed pushes particles along the shell surface, constantly
+      // reforming the dome without deforming it. The azimuthal breeze
+      // (zero at the pole) feeds just enough energy back to offset damping
+      // so the slow global rotation never dies out.
+      const fp = pos.mul(2.2);
+      const ft = uTime.mul(0.12);
+      const fv = vec3(
+        mx_noise_float(fp.add(vec3(ft, 0, 17.3))),
+        mx_noise_float(fp.add(vec3(31.7, ft, 5.1))),
+        mx_noise_float(fp.add(vec3(9.2, 23.4, ft))),
+      );
+      acc.addAssign(fv.sub(rhat.mul(dot(fv, rhat))).mul(uFlow));
+      const az = vec3(pos.z.negate(), 0, pos.x).div(r.max(1e-6));
+      acc.addAssign(az.mul(uSwirl));
 
       // Pointer / VR controller penalty forces (one slot per hand + mouse).
       const gains = [uPtrG.x, uPtrG.y, uPtrG.z];
@@ -341,7 +371,7 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
 
   const fPhys = pane.addFolder({ title: 'Gravity & Integration' });
   fPhys.addBinding(params, 'totalMass', { min: 1000, max: 100000, step: 500, label: 'total mass' });
-  fPhys.addBinding(params, 'gravity', { min: 0, max: 0.00002, step: 0.0000002 });
+  fPhys.addBinding(params, 'gravity', { min: 0, max: 0.000002, step: 0.00000002 });
   fPhys.addBinding(params, 'dt', { min: 0.001, max: 0.05, step: 0.0005, label: 'timestep' });
   fPhys.addBinding(params, 'softening', { min: 0.001, max: 0.5, step: 0.001, label: 'softening ε' });
   fPhys.addBinding(params, 'damping', { min: 0.9, max: 1.0, step: 0.0005 });
@@ -351,6 +381,10 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
   fDome.addBinding(params, 'shellK', { min: 0, max: 20, step: 0.5, label: 'dome strength' });
   fDome.addBinding(params, 'shellR', { min: 0.4, max: 1.1, step: 0.01, label: 'shell radius' });
   fDome.addBinding(params, 'floorK', { min: 0, max: 8, step: 0.5, label: 'floor stiffness ×' });
+
+  const fFlow = pane.addFolder({ title: 'Flow & Wind' });
+  fFlow.addBinding(params, 'flow', { min: 0, max: 0.15, step: 0.001, label: 'noise stir' });
+  fFlow.addBinding(params, 'swirl', { min: 0, max: 0.08, step: 0.001, label: 'breeze' });
 
   const fSeed = pane.addFolder({ title: 'Initial Conditions' });
   fSeed.addBinding(params, 'spin', { min: 0, max: 2.0, step: 0.01, label: 'orbital spin' });
@@ -399,6 +433,9 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
     uShellR.value = params.shellR;
     uFloorK.value = params.floorK;
     uPtrSoft.value = params.pointerSoftening;
+    uFlow.value = params.flow;
+    uSwirl.value = params.swirl;
+    uTime.value += params.dt * params.steps;
     uSizeScale.value = params.sizeScale;
     uMinSize.value = params.minSize;
     uColorScale.value = params.colorScale;
