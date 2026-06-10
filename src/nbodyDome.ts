@@ -324,6 +324,8 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
       '64k': 65536,
       '128k': 131072,
       '256k': 262144,
+      '512k': 524288,
+      '1M': 1048576,
     },
   }).on('change', () => { teardown(); build(); });
   fSim.addBinding(params, 'steps', { min: 1, max: 8, step: 1, label: 'steps / frame' });

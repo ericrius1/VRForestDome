@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import Stats from 'three/addons/libs/stats.module.js';
+import StatsGL from 'stats-gl';
 import { createTerrain, terrainHeight } from './terrain';
 import { createForest } from './trees';
 import { createGrass } from './grass';
@@ -127,6 +128,42 @@ const stats = new Stats();
 stats.dom.style.zIndex = '25';
 document.body.appendChild(stats.dom);
 
+// Debug-only inspector along the bottom: frametime graphs (CPU + GPU via
+// timestamp queries) from stats-gl, plus a renderer.info readout for draw
+// calls, triangles, and GPU memory.
+let statsGL: StatsGL | null = null;
+let inspector: HTMLDivElement | null = null;
+
+if (import.meta.env.DEV) {
+  statsGL = new StatsGL({ trackGPU: true, horizontal: true });
+  statsGL.init(renderer);
+  document.body.appendChild(statsGL.dom);
+  statsGL.dom.style.cssText = `
+    position:fixed; left:50%; bottom:44px; top:auto; transform:translateX(-50%);
+    z-index:25; display:flex;`;
+
+  inspector = document.createElement('div');
+  inspector.style.cssText = `
+    position:fixed; left:50%; bottom:12px; transform:translateX(-50%); z-index:25;
+    padding:6px 12px; background:rgba(14,20,16,0.72); color:#cfe0cf;
+    border-radius:6px; font:400 11px/1.5 ui-monospace, monospace;
+    pointer-events:none; white-space:nowrap;`;
+  document.body.appendChild(inspector);
+
+  const mb = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1);
+  setInterval(() => {
+    if (!inspector || inspector.style.display === 'none') return;
+    const { render, compute, memory } = renderer.info;
+    const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
+    inspector.textContent =
+      `draws ${render.drawCalls} · tris ${render.triangles.toLocaleString()}` +
+      ` · pts ${render.points.toLocaleString()}` +
+      ` · gpu render ${(render.timestamp ?? 0).toFixed(2)}ms · compute ${(compute.timestamp ?? 0).toFixed(2)}ms` +
+      ` · geoms ${memory.geometries} · tex ${memory.textures}` +
+      (heap ? ` · js heap ${mb(heap.usedJSHeapSize)}MB` : '');
+  }, 500);
+}
+
 // Bottom-left key/control reference, shown alongside the rest of the HUD.
 const infoBox = document.createElement('div');
 infoBox.style.cssText = `
@@ -180,6 +217,8 @@ function setOverlaysVisible(visible: boolean) {
   stats.dom.style.display = visible ? 'block' : 'none';
   dome.pane.element.parentElement!.style.display = visible ? '' : 'none';
   infoBox.style.display = visible ? '' : 'none';
+  if (statsGL) statsGL.dom.style.display = visible ? 'flex' : 'none';
+  if (inspector) inspector.style.display = visible ? '' : 'none';
 }
 
 window.addEventListener('keydown', (e) => {
@@ -317,7 +356,7 @@ function updateLocomotion(dt: number) {
 
 if (import.meta.env.DEV) {
   (window as unknown as { __debug: object }).__debug = {
-    camera, rig, scene, sky, controls, keys, dome, isFallback: () => fallbackLook,
+    camera, rig, scene, sky, controls, keys, dome, renderer, isFallback: () => fallbackLook,
   };
 }
 
@@ -346,5 +385,6 @@ renderer.setAnimationLoop(() => {
   sky.update(dt);
 
   renderer.render(scene, camera);
+  statsGL?.update();
   stats.end();
 });
