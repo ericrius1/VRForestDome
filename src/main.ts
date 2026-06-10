@@ -133,10 +133,10 @@ if (import.meta.env.DEV) {
   devInspector = new Inspector();
   renderer.inspector = devInspector;
   document.body.appendChild(devInspector.domElement);
-  // Starts as a collapsed pill on first run; open the bottom panel. The
-  // profiler persists its layout in localStorage afterwards.
+  // Start minimized (collapsed pill); click it to expand. Collapse even if a
+  // previous session left the panel open in the persisted layout.
   const profiler = devInspector.profiler;
-  if (!profiler.panel.classList.contains('visible')) profiler.togglePanel();
+  if (profiler.panel.classList.contains('visible')) profiler.togglePanel();
 }
 
 // Bottom-left key/control reference, shown alongside the rest of the HUD.
