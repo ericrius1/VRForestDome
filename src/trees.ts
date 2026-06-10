@@ -5,7 +5,7 @@ import {
   positionLocal, positionWorld, attribute, hash, instanceIndex, mx_noise_float,
 } from 'three/tsl';
 import { terrainHeight } from './terrain';
-import { DOME } from './nbodyDome';
+import { DOME, CLEARING_R } from './nbodyDome';
 
 type Rng = () => number;
 
@@ -164,7 +164,7 @@ export function createForest(): THREE.Group {
       const r = minR + rng() * (maxR - minR);
       const x = Math.cos(a) * r, z = Math.sin(a) * r;
       if (z > 12 && Math.abs(x - 3) < 8) continue;
-      if ((x - DOME.x) ** 2 + (z - DOME.z) ** 2 < (DOME.r + 1.5) ** 2) continue;
+      if ((x - DOME.x) ** 2 + (z - DOME.z) ** 2 < CLEARING_R ** 2) continue;
       if (placed.every((p) => (p.x - x) ** 2 + (p.z - z) ** 2 > minDist * minDist)) {
         placed.push({ x, z });
         return new THREE.Vector3(x, terrainHeight(x, z) - 0.25, z);

@@ -2,18 +2,13 @@ import * as THREE from 'three/webgpu';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import Stats from 'three/addons/libs/stats.module.js';
-import {
-  color, float, vec2, vec3, vec4, mix, smoothstep, screenUV, pass, uniform,
-  Fn, Loop, dot, exp, length, normalize, select, time, cameraPosition,
-  mx_noise_float, fract, sin,
-} from 'three/tsl';
-import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { createTerrain, terrainHeight } from './terrain';
 import { createForest } from './trees';
 import { createGrass } from './grass';
 import { createFlowers } from './flowers';
 import { createNBodyDome } from './nbodyDome';
 import { createCursor } from './cursor';
+import { createDayNight } from './sky';
 
 const renderer = new THREE.WebGPURenderer({ antialias: true });
 await renderer.init();
@@ -28,11 +23,6 @@ document.body.appendChild(renderer.domElement);
 document.body.appendChild(VRButton.createButton(renderer));
 
 const scene = new THREE.Scene();
-
-const horizon = color(0xe9efee);
-const zenith = color(0xa9c3d2);
-scene.backgroundNode = mix(zenith, horizon, smoothstep(0.2, 0.7, screenUV.y));
-scene.fog = new THREE.FogExp2(0xd2dad2, 0.012);
 
 const EYE = 1.7;
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 400);
@@ -60,7 +50,10 @@ sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.05;
 scene.add(sun);
 
-scene.add(new THREE.HemisphereLight(0xd2ddd8, 0x4a5230, 0.85));
+const hemi = new THREE.HemisphereLight(0xd2ddd8, 0x4a5230, 0.85);
+scene.add(hemi);
+
+const sky = createDayNight(scene, sun, hemi);
 
 scene.add(createTerrain());
 scene.add(createForest());
@@ -69,6 +62,7 @@ scene.add(createFlowers());
 
 const cursor = createCursor();
 const dome = createNBodyDome(renderer, scene);
+sky.attachPane(dome.pane);
 
 // ---------------- VR controllers ----------------
 
@@ -137,75 +131,6 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-// ---------------- post processing (desktop only — XR renders direct) ----------------
-
-const postProcessing = new THREE.PostProcessing(renderer);
-const scenePass = pass(scene, camera);
-const sceneColor = scenePass.getTextureNode('output');
-const sceneLinearDepth = scenePass.getLinearDepthNode();
-
-const uNear = uniform(camera.near);
-const uFar = uniform(camera.far);
-const uTanY = uniform(Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
-const uTanX = uniform(uTanY.value * camera.aspect);
-const uCamWorld = uniform(camera.matrixWorld);
-const sunDir = sun.position.clone().normalize();
-const uSunDir = uniform(sunDir.clone());
-
-const MIST_BASE = -6.5;
-const MIST_FALLOFF = 0.5;
-const MIST_DENSITY = 0.06;
-
-const mistedScene = Fn(() => {
-  const suv = screenUV;
-  const ndcX = suv.x.mul(2).sub(1);
-  const ndcY = float(1).sub(suv.y).mul(2).sub(1);
-  const viewVec = vec3(ndcX.mul(uTanX), ndcY.mul(uTanY), -1);
-  const zMag = uNear.add(uFar.sub(uNear).mul(sceneLinearDepth.x));
-  const dist = zMag.mul(length(viewVec)).min(260);
-  const rayW = normalize(uCamWorld.mul(vec4(normalize(viewVec), 0)).xyz);
-  const dy = rayW.y;
-  const dyc = select(dy.abs().lessThan(0.002), float(0.002).mul(dy.sign().add(0.5).sign()), dy);
-  const camFactor = exp(cameraPosition.y.sub(MIST_BASE).mul(-MIST_FALLOFF));
-  const fogAmount = float(MIST_DENSITY / MIST_FALLOFF)
-    .mul(camFactor)
-    .mul(float(1).sub(exp(dyc.mul(dist).mul(-MIST_FALLOFF))))
-    .div(dyc);
-  const mid = cameraPosition.add(rayW.mul(dist.min(90).mul(0.5)));
-  const n = mx_noise_float(vec3(
-    mid.x.mul(0.045).add(time.mul(0.05)),
-    mid.y.mul(0.12),
-    mid.z.mul(0.045).sub(time.mul(0.03)),
-  )).mul(0.5).add(0.5);
-  const mistAmount = float(1).sub(exp(fogAmount.mul(n.mul(1.2).add(0.35)).negate())).saturate();
-  const glow = dot(rayW, uSunDir).max(0).pow(5);
-  const mistCol = mix(color(0xdde5e1), color(0xffeccd), glow.mul(0.75));
-  return mix(sceneColor.rgb, mistCol, mistAmount);
-})();
-
-const RAY_SAMPLES = 44;
-const uSunScreen = uniform(new THREE.Vector2(0.5, 0.4));
-const uRayStrength = uniform(0);
-
-const godRays = Fn(() => {
-  const delta = uSunScreen.sub(screenUV).mul(0.9 / RAY_SAMPLES);
-  const jitter = fract(sin(dot(screenUV, vec2(12.9898, 78.233))).mul(43758.5453));
-  const suv = screenUV.add(delta.mul(jitter)).toVar();
-  const decay = float(1).toVar();
-  const acc = vec3(0).toVar();
-  Loop(RAY_SAMPLES, () => {
-    suv.addAssign(delta);
-    const c = sceneColor.sample(suv).rgb;
-    const lum = dot(c, vec3(0.299, 0.587, 0.114));
-    acc.addAssign(c.mul(smoothstep(0.55, 1.1, lum)).mul(decay));
-    decay.mulAssign(0.955);
-  });
-  return acc.div(RAY_SAMPLES).mul(color(0xffe2b0)).mul(uRayStrength);
-})();
-
-const bloomPass = bloom(sceneColor, 0.3, 0.5, 0.8);
-postProcessing.outputNode = vec4(mistedScene.add(bloomPass.rgb).add(godRays), 1);
-
 // ---------------- FPS controls ----------------
 
 const controls = new PointerLockControls(camera, renderer.domElement);
@@ -253,21 +178,11 @@ window.addEventListener('mouseup', () => { pointerDown = false; });
 
 let velF = 0, velR = 0;
 
-const camDir = new THREE.Vector3();
-const proj = new THREE.Vector3();
 const clock = new THREE.Clock();
-
-function updateSun() {
-  proj.copy(camera.position).addScaledVector(sunDir, 200).project(camera);
-  uSunScreen.value.set(proj.x * 0.5 + 0.5, 0.5 - proj.y * 0.5);
-  camera.getWorldDirection(camDir);
-  uRayStrength.value = THREE.MathUtils.smoothstep(camDir.dot(sunDir), 0.05, 0.45) * 2.6;
-}
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  uTanX.value = uTanY.value * camera.aspect;
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
@@ -345,7 +260,7 @@ function updateLocomotion(dt: number) {
 
 if (import.meta.env.DEV) {
   (window as unknown as { __debug: object }).__debug = {
-    camera, rig, scene, sunDir, controls, keys, dome, isFallback: () => fallbackLook,
+    camera, rig, scene, sky, controls, keys, dome, isFallback: () => fallbackLook,
   };
 }
 
@@ -371,12 +286,8 @@ renderer.setAnimationLoop(() => {
 
   updateForcers();
   dome.update(dt);
+  sky.update(dt);
 
-  if (renderer.xr.isPresenting) {
-    renderer.render(scene, camera);
-  } else {
-    updateSun();
-    postProcessing.render();
-  }
+  renderer.render(scene, camera);
   stats.end();
 });

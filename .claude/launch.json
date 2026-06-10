@@ -4,8 +4,9 @@
     {
       "name": "vr-dome-forest",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 5173
+      "runtimeArgs": ["run", "dev", "--", "--port", "5175", "--strictPort"],
+      "port": 5175,
+      "autoPort": false
     }
   ]
 }

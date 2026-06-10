@@ -6,10 +6,14 @@ import {
 import { Pane } from 'tweakpane';
 import { terrainHeight } from './terrain';
 
-// World-space footprint of the dome (trees keep a clearing around it).
+// World-space footprint of the dome. It envelops most of the forest; the
+// shell only nears the ground beyond the tree line, so trees live inside it.
 export const DOME = {
-  x: -10, z: -1, r: 21,
+  x: -10, z: -1, r: 84,
 };
+
+// Open meadow kept free of trees at the dome's center (the old footprint).
+export const CLEARING_R = 22.5;
 
 // The simulation runs in the blog post's units (shell radius ~0.9) and is
 // scaled up into world space for rendering and interaction.
@@ -74,30 +78,32 @@ function randn(): number {
 export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Scene): NBodyDome {
   const params: NBodyDomeParams = {
     count: 16384,
-    steps: 2,
+    steps: 1,
     paused: false,
     totalMass: 40960,
     gravity: 0.0000016,
-    dt: 0.016,
+    // Small timestep + single-ish steps keep world-space motion slow and
+    // meditative now that sim units span an 84 m dome.
+    dt: 0.008,
     softening: 0.05,
     // The post's pairing: dome spring on, gentle damping so the shell
     // settles instead of ringing forever.
     damping: 0.999,
-    maxSpeed: 1.5,
+    maxSpeed: 0.3,
     shellK: 6,
     shellR: SIM_R,
     floorK: 4,
-    spin: 1.0,
-    dispersion: 0.08,
+    spin: 0.35,
+    dispersion: 0.04,
     massMin: 1,
     massMax: 3,
     pointerMode: 'attract',
-    strength: 1.2,
-    pointerSoftening: 0.02,
+    strength: 0.35,
+    pointerSoftening: 0.08,
     pointerMassScale: 1.0,
     sizeScale: 0.004,
     minSize: 0.002,
-    colorScale: 1.6,
+    colorScale: 4,
     colorLow: '#1b3cff',
     colorHigh: '#ff4d2e',
     brightness: 1.5,
