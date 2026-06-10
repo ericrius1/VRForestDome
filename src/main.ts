@@ -127,12 +127,59 @@ const stats = new Stats();
 stats.dom.style.zIndex = '25';
 document.body.appendChild(stats.dom);
 
+// Bottom-left key/control reference, shown alongside the rest of the HUD.
+const infoBox = document.createElement('div');
+infoBox.style.cssText = `
+  position:fixed; left:12px; bottom:12px; z-index:25; padding:10px 14px;
+  background:rgba(14,20,16,0.72); color:#dfe8df; border-radius:8px;
+  font:400 12px/1.7 system-ui, sans-serif; letter-spacing:0.02em;
+  pointer-events:none; white-space:nowrap;`;
+
+function controlRows(rows: [string, string][]): string {
+  return rows.map(([k, d]) =>
+    `<tr><td style="padding-right:12px;opacity:0.7;text-align:right">${k}</td><td>${d}</td></tr>`,
+  ).join('');
+}
+
+infoBox.innerHTML = `
+  <table style="border-spacing:0"><tbody>
+    ${controlRows([
+      ['W A S D', 'move'],
+      ['Shift', 'run'],
+      ['mouse', 'look'],
+      ['hold click', 'apply force'],
+      ['T', 'attract / repulse'],
+      ['R', 'reseed particles'],
+      ['P', 'pause sim'],
+      ['/', 'toggle HUD'],
+      ['Esc', 'release mouse'],
+    ])}
+  </tbody></table>`;
+document.body.appendChild(infoBox);
+
+if (navigator.xr) {
+  navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
+    if (!supported) return;
+    infoBox.insertAdjacentHTML('beforeend', `
+      <div style="margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.15);opacity:0.9;font-weight:600">VR</div>
+      <table style="border-spacing:0"><tbody>
+        ${controlRows([
+          ['right trigger/grip', 'attract'],
+          ['left trigger/grip', 'repulse'],
+          ['left stick', 'move'],
+          ['right stick', 'turn'],
+        ])}
+      </tbody></table>`);
+  }).catch(() => {});
+}
+
 let overlaysVisible = true;
 
 function setOverlaysVisible(visible: boolean) {
   overlaysVisible = visible;
   stats.dom.style.display = visible ? 'block' : 'none';
   dome.pane.element.parentElement!.style.display = visible ? '' : 'none';
+  infoBox.style.display = visible ? '' : 'none';
 }
 
 window.addEventListener('keydown', (e) => {
