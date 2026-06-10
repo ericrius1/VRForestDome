@@ -114,7 +114,10 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
     pointerMassScale: 1.0,
     sizeScale: 0.004,
     minSize: 0.002,
-    colorScale: 4,
+    // Speeds are normalized by maxSpeed before coloring; 1.5 means full
+    // "fast" color at ~2/3 of the cap, so pointer-stirred particles peak
+    // while ambient drift stays in the lower third of the ramp.
+    colorScale: 1.5,
     colorLow: '#1b3cff',
     colorHigh: '#ff4d2e',
     brightness: 1.5,
@@ -276,8 +279,11 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
     material.positionNode = uCenter.add(p.xyz.mul(SCALE));
     const rad = uMinSize.max(uSizeScale.mul(p.w.pow(1 / 3)));
     material.scaleNode = rad.mul(2 * SCALE);
+    // Color by speed as a fraction of the speed cap so the low->high ramp
+    // always spans the actual speed range, regardless of how chill the
+    // physics defaults get. colorScale > 1 hits full color before the cap.
     const speed = v.xyz.length();
-    const t = speed.mul(uColorScale).saturate();
+    const t = speed.div(uMaxSpeed.max(1e-6)).mul(uColorScale).saturate();
     const col = mix(uColLow, uColHigh, t);
     const d = uv().sub(0.5).length().mul(2);
     const a = smoothstep(1, 0, d);
@@ -404,7 +410,7 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
   const fLook = pane.addFolder({ title: 'Particle Appearance' });
   fLook.addBinding(params, 'sizeScale', { min: 0, max: 0.02, step: 0.0001, label: 'size ∝ mass^⅓' });
   fLook.addBinding(params, 'minSize', { min: 0, max: 0.01, step: 0.0001 });
-  fLook.addBinding(params, 'colorScale', { min: 0, max: 12, step: 0.01, label: 'speed → color' });
+  fLook.addBinding(params, 'colorScale', { min: 0, max: 6, step: 0.01, label: 'speed → color (×max)' });
   fLook.addBinding(params, 'colorLow', { label: 'slow color' });
   fLook.addBinding(params, 'colorHigh', { label: 'fast color' });
   fLook.addBinding(params, 'brightness', { min: 0, max: 6, step: 0.05 });
