@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import {
-  color, float, vec2, vec3, mix, smoothstep, uniform, Fn,
-  positionWorldDirection, mx_noise_float, time, fract, sin, dot, step,
+  color, vec3, mix, smoothstep, uniform, Fn,
+  positionWorldDirection, mx_noise_float, time,
 } from 'three/tsl';
 
 export interface DayNightParams {
@@ -45,27 +45,12 @@ export function createDayNight(
 
   const uHorizon = uniform(NIGHT_HORIZON.clone());
   const uZenith = uniform(NIGHT_ZENITH.clone());
-  const uNight = uniform(1); // deep-night factor gating stars + aurora
+  const uNight = uniform(1); // deep-night factor gating aurora
   const uAurora = uniform(params.auroraStrength);
 
   scene.backgroundNode = Fn(() => {
     const dir = positionWorldDirection;
     const sky = mix(uHorizon, uZenith, smoothstep(-0.05, 0.5, dir.y)).toVar();
-
-    // Stars: jittered point per cell on a horizon-projected grid.
-    const sp = dir.xz.div(dir.y.add(0.45)).mul(34);
-    const cell = sp.floor();
-    const f = sp.fract();
-    const h1 = fract(sin(dot(cell, vec2(127.1, 311.7))).mul(43758.5453));
-    const h2 = fract(h1.mul(1235.347));
-    const d = f.sub(vec2(h1.mul(0.7).add(0.15), h2.mul(0.7).add(0.15))).length();
-    const twinkle = sin(time.mul(1.5).add(h1.mul(40))).mul(0.3).add(0.7);
-    const star = smoothstep(0.10, 0.0, d)
-      .mul(step(0.72, h2))
-      .mul(twinkle)
-      .mul(smoothstep(0.03, 0.2, dir.y))
-      .mul(uNight);
-    sky.addAssign(vec3(0.75, 0.82, 1).mul(star));
 
     // Aurora: slow ribbon noise shaped by faster vertical curtain streaks.
     const ap = dir.xz.div(dir.y.add(0.32));
