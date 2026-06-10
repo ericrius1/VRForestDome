@@ -8,6 +8,7 @@ import { createFlowers } from './flowers';
 import { createNBodyDome } from './nbodyDome';
 import { createCursor } from './cursor';
 import { createDayNight } from './sky';
+import { Inspector } from 'three/addons/inspector/Inspector.js';
 
 const renderer = new THREE.WebGPURenderer({ antialias: true });
 await renderer.init();
@@ -122,22 +123,19 @@ renderer.xr.addEventListener('sessionend', () => {
 
 // ---------------- inspector + tweakpane overlay toggle ----------------
 
-// Debug-only: the official three.js inspector (performance, memory,
-// timeline) docked at the bottom of the page. Dynamically imported so it
-// never ships in the production bundle. The renderer only auto-attaches the
-// inspector DOM when it's set before init(), so attach it manually here.
+// The official three.js inspector (performance, memory, timeline) docked at
+// the bottom of the page. Always available — dev and production alike — and
+// hidden together with the rest of the HUD via the "/" toggle. The renderer
+// only auto-attaches the inspector DOM when it's set before init(), so
+// attach it manually here.
+const devInspector = new Inspector();
+renderer.inspector = devInspector;
+document.body.appendChild(devInspector.domElement);
+// Start minimized (collapsed pill); click it to expand. Collapse even if a
+// previous session left the panel open in the persisted layout.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let devInspector: any = null;
-if (import.meta.env.DEV) {
-  const { Inspector } = await import('three/addons/inspector/Inspector.js');
-  devInspector = new Inspector();
-  renderer.inspector = devInspector;
-  document.body.appendChild(devInspector.domElement);
-  // Start minimized (collapsed pill); click it to expand. Collapse even if a
-  // previous session left the panel open in the persisted layout.
-  const profiler = devInspector.profiler;
-  if (profiler.panel.classList.contains('visible')) profiler.togglePanel();
-}
+const profiler = (devInspector as any).profiler;
+if (profiler.panel.classList.contains('visible')) profiler.togglePanel();
 
 // Bottom-left key/control reference, shown alongside the rest of the HUD.
 const infoBox = document.createElement('div');
@@ -191,9 +189,7 @@ function setOverlaysVisible(visible: boolean) {
   overlaysVisible = visible;
   dome.pane.element.parentElement!.style.display = visible ? '' : 'none';
   infoBox.style.display = visible ? '' : 'none';
-  if (devInspector) {
-    devInspector.domElement.style.display = visible ? '' : 'none';
-  }
+  devInspector.domElement.style.display = visible ? '' : 'none';
 }
 
 window.addEventListener('keydown', (e) => {
@@ -329,11 +325,9 @@ function updateLocomotion(dt: number) {
   rig.position.y = terrainHeight(rig.position.x, rig.position.z);
 }
 
-if (import.meta.env.DEV) {
-  (window as unknown as { __debug: object }).__debug = {
-    camera, rig, scene, sky, controls, keys, dome, renderer, isFallback: () => fallbackLook,
-  };
-}
+(window as unknown as { __debug: object }).__debug = {
+  camera, rig, scene, sky, controls, keys, dome, renderer, isFallback: () => fallbackLook,
+};
 
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05);
