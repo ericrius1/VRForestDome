@@ -1,7 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
-import { Inspector } from 'three/addons/inspector/Inspector.js';
 import { createTerrain, terrainHeight } from './terrain';
 import { createForest } from './trees';
 import { createGrass } from './grass';
@@ -121,14 +120,23 @@ renderer.xr.addEventListener('sessionend', () => {
   if (!fallbackLook) overlay.style.display = '';
 });
 
-// ---------------- stats + tweakpane overlay toggle ----------------
+// ---------------- inspector + tweakpane overlay toggle ----------------
 
 // Debug-only: the official three.js inspector (performance, memory,
-// timeline) docked at the bottom of the page.
-let devInspector: Inspector | null = null;
+// timeline) docked at the bottom of the page. Dynamically imported so it
+// never ships in the production bundle. The renderer only auto-attaches the
+// inspector DOM when it's set before init(), so attach it manually here.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let devInspector: any = null;
 if (import.meta.env.DEV) {
+  const { Inspector } = await import('three/addons/inspector/Inspector.js');
   devInspector = new Inspector();
   renderer.inspector = devInspector;
+  document.body.appendChild(devInspector.domElement);
+  // Starts as a collapsed pill on first run; open the bottom panel. The
+  // profiler persists its layout in localStorage afterwards.
+  const profiler = devInspector.profiler;
+  if (!profiler.panel.classList.contains('visible')) profiler.togglePanel();
 }
 
 // Bottom-left key/control reference, shown alongside the rest of the HUD.

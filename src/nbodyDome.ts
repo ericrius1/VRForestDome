@@ -312,7 +312,11 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
   // tweakpane v4 typings omit folder helpers used at runtime
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pane = new Pane({ title: 'N-Body Dome' }) as any;
-  pane.element.parentElement!.style.zIndex = '20';
+  const paneContainer = pane.element.parentElement!;
+  paneContainer.style.zIndex = '20';
+  paneContainer.style.maxHeight = 'calc(100vh - 16px)';
+  paneContainer.style.overflowY = 'auto';
+  paneContainer.style.overscrollBehavior = 'contain';
 
   const fSim = pane.addFolder({ title: 'Simulation' });
   fSim.addBinding(params, 'count', {
