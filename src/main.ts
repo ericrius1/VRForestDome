@@ -70,6 +70,7 @@ interface ControllerState {
   controller: THREE.Group;
   line: THREE.Line;
   sign: number; // +1 attract, -1 repulse, 0 idle
+  handedness: XRHandedness;
 }
 
 const ATTRACT_COLOR = new THREE.Color('#4fd8ff');
@@ -86,12 +87,21 @@ function makeController(index: number): ControllerState {
   const line = new THREE.Line(geo, mat);
   line.scale.z = 8;
   controller.add(line);
-  const state: ControllerState = { controller, line, sign: 0 };
-  // Trigger attracts, grip repulses — both hands work independently.
-  controller.addEventListener('selectstart', () => { state.sign = 1; });
-  controller.addEventListener('selectend', () => { if (state.sign === 1) state.sign = 0; });
-  controller.addEventListener('squeezestart', () => { state.sign = -1; });
-  controller.addEventListener('squeezeend', () => { if (state.sign === -1) state.sign = 0; });
+  const state: ControllerState = { controller, line, sign: 0, handedness: 'none' };
+  // Role is fixed per hand: right attracts, left repulses. Trigger or grip
+  // activates it, so both hands can run at once or solo.
+  const roleSign = () => (state.handedness === 'left' ? -1 : 1);
+  let pressed = 0;
+  controller.addEventListener('connected', (e) => {
+    state.handedness = (e as THREE.Event & { data?: XRInputSource }).data?.handedness ?? 'none';
+  });
+  controller.addEventListener('disconnected', () => { pressed = 0; state.sign = 0; });
+  const press = () => { pressed++; state.sign = roleSign(); };
+  const release = () => { pressed = Math.max(0, pressed - 1); if (pressed === 0) state.sign = 0; };
+  controller.addEventListener('selectstart', press);
+  controller.addEventListener('selectend', release);
+  controller.addEventListener('squeezestart', press);
+  controller.addEventListener('squeezeend', release);
   return state;
 }
 
@@ -140,7 +150,7 @@ overlay.style.cssText = `
   position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
   background:rgba(20,28,24,0.25); color:#eef3ee; cursor:pointer; user-select:none;
   font:500 18px/1.6 system-ui, sans-serif; text-align:center; letter-spacing:0.02em;`;
-overlay.innerHTML = '<div>Click to walk<br><span style="font-size:14px;opacity:0.8">WASD move &middot; Shift run &middot; mouse look &middot; hold click for force &middot; t attract/repulse &middot; Esc release &middot; / toggle HUD<br>VR: trigger attracts &middot; grip repulses &middot; left stick move &middot; right stick turn</span></div>';
+overlay.innerHTML = '<div>Click to walk<br><span style="font-size:14px;opacity:0.8">WASD move &middot; Shift run &middot; mouse look &middot; hold click for force &middot; t attract/repulse &middot; Esc release &middot; / toggle HUD<br>VR: right hand attracts &middot; left hand repulses &middot; left stick move &middot; right stick turn</span></div>';
 document.body.appendChild(overlay);
 
 let fallbackLook = false;
