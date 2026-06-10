@@ -212,8 +212,12 @@ document.body.appendChild(overlay);
 
 let fallbackLook = false;
 let dragLooking = false;
+let everLocked = false;
 
 document.addEventListener('pointerlockerror', () => {
+  // Lock worked before, so this is the browser's ~1.3s cooldown after an
+  // Esc exit — not missing support. The next click will succeed.
+  if (everLocked) return;
   if (fallbackLook) return;
   fallbackLook = true;
   overlay.style.display = 'none';
@@ -230,7 +234,7 @@ document.addEventListener('pointerlockerror', () => {
 });
 
 overlay.addEventListener('click', () => { if (!fallbackLook) controls.lock(); });
-controls.addEventListener('lock', () => { overlay.style.display = 'none'; });
+controls.addEventListener('lock', () => { everLocked = true; overlay.style.display = 'none'; });
 renderer.domElement.addEventListener('click', () => {
   if (!fallbackLook && !controls.isLocked && !renderer.xr.isPresenting) controls.lock();
 });
