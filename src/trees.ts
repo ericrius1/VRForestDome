@@ -141,7 +141,7 @@ function leafMaterial(): THREE.MeshStandardNodeMaterial {
     .mul(mix(float(0.7), float(1.18), smoothstep(0.0, 0.45, p.length())));
   mat.colorNode = leafCol;
 
-  const phase = attribute('aPhase');
+  const phase = attribute<'float'>('aPhase', 'float');
   const sway = sin(time.mul(1.3).add(phase)).mul(0.06)
     .add(sin(time.mul(2.9).add(phase.mul(1.7))).mul(0.03));
   mat.positionNode = positionLocal.add(vec3(sway, sway.mul(0.5), 0));

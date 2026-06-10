@@ -20,7 +20,7 @@ export function createGrass(count = 90000, radius = 42): THREE.InstancedMesh {
   const tip = mix(color(0x7e9440), color(0xa3b35e), h);
   material.colorNode = mix(base, tip, tipness.pow(1.4));
 
-  const phase = attribute('aPhase');
+  const phase = attribute<'float'>('aPhase', 'float');
   const bend = tipness.pow(2);
   const sway = sin(time.mul(1.6).add(phase)).mul(0.13)
     .add(sin(time.mul(3.8).add(phase.mul(1.7))).mul(0.045));

@@ -9,7 +9,8 @@
     "isolatedModules": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
-    "lib": ["ESNext", "DOM"]
+    "lib": ["ESNext", "DOM"],
+    "types": ["@webgpu/types", "vite/client"]
   },
   "include": ["src"]
 }

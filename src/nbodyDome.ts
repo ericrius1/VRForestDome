@@ -1,10 +1,11 @@
 import * as THREE from 'three/webgpu';
 import {
-  Fn, If, Loop, uniform, instancedArray, instanceIndex,
-  float, vec3, vec4, mix, smoothstep, uv, dot, mx_noise_float,
+  Fn, uniform, instancedArray, instanceIndex,
+  vec4, mix, smoothstep, uv,
 } from 'three/tsl';
 import { Pane } from 'tweakpane';
 import { terrainHeight } from './terrain';
+import { OctreeDomeSolver } from './octreeSolver';
 
 // World-space footprint of the dome. It envelops most of the forest; the
 // shell only nears the ground beyond the tree line, so trees live inside it.
@@ -31,6 +32,7 @@ export interface NBodyDomeParams {
   gravity: number;
   dt: number;
   softening: number;
+  theta: number;
   damping: number;
   maxSpeed: number;
   shellK: number;
@@ -79,7 +81,9 @@ function randn(): number {
 
 export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Scene): NBodyDome {
   const params: NBodyDomeParams = {
-    count: 16384,
+    // Barnes-Hut octree solver (ported from the blog post) makes the gravity
+    // cost ~N·log N instead of N², so six-figure counts run at full rate.
+    count: 131072,
     steps: 1,
     paused: false,
     totalMass: 40960,
@@ -91,6 +95,8 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
     // meditative now that sim units span an 84 m dome.
     dt: 0.008,
     softening: 0.08,
+    // Barnes-Hut acceptance: cellWidth² < θ²·distance². Lower = more exact.
+    theta: 0.8,
     // The post's pairing: dome spring on, gentle damping so the shell
     // settles instead of ringing forever.
     damping: 0.999,
@@ -114,10 +120,11 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
     pointerMassScale: 1.0,
     sizeScale: 0.004,
     minSize: 0.002,
-    // Speeds are normalized by maxSpeed before coloring; 1.5 means full
-    // "fast" color at ~2/3 of the cap, so pointer-stirred particles peak
-    // while ambient drift stays in the lower third of the ramp.
-    colorScale: 1.5,
+    // Speeds are normalized by maxSpeed before coloring; 2.5 tops the ramp
+    // out at ~40% of the cap. Combined with the squared response curve,
+    // ambient drift (~15-20% of cap) stays blue while attracted particles
+    // shoot through the pink midrange into orange.
+    colorScale: 2.5,
     colorLow: '#1b3cff',
     colorHigh: '#ff4d2e',
     brightness: 1.5,
@@ -134,21 +141,7 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
   baseY -= 0.25;
   const center = new THREE.Vector3(cx, baseY, cz);
 
-  const uG = uniform(params.gravity);
-  const uDt = uniform(params.dt);
-  const uSoftening = uniform(params.softening);
-  const uDamping = uniform(params.damping);
   const uMaxSpeed = uniform(params.maxSpeed);
-  const uShellK = uniform(params.shellK);
-  const uShellR = uniform(params.shellR);
-  const uFloorK = uniform(params.floorK);
-  const uPtrSoft = uniform(params.pointerSoftening);
-  const uFlow = uniform(params.flow);
-  const uSwirl = uniform(params.swirl);
-  const uTime = uniform(0);
-  const uPtrPos = Array.from({ length: FORCER_SLOTS }, () => uniform(new THREE.Vector3()));
-  // One strength per slot, packed into a vec3 uniform (x, y, z = slots 0..2).
-  const uPtrG = uniform(new THREE.Vector3());
   const uSizeScale = uniform(params.sizeScale);
   const uMinSize = uniform(params.minSize);
   const uColorScale = uniform(params.colorScale);
@@ -191,99 +184,53 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
 
   let n = params.count;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let posA: any, posB: any, velA: any, velB: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let stepAB: any, stepBA: any, copyBA: any;
+  let posArr: any, velArr: any;
+  let posBuf: GPUBuffer, velBuf: GPUBuffer;
+  let solver: OctreeDomeSolver;
   let sprite: THREE.Sprite | null = null;
+  let simTime = 0;
 
-  function makeStep(srcP: typeof posA, srcV: typeof velA, dstP: typeof posB, dstV: typeof velB) {
-    return Fn(() => {
-      const pm = srcP.element(instanceIndex);
-      const pos = pm.xyz.toVar();
-      const mass = pm.w;
-      const vel = srcV.element(instanceIndex).xyz.toVar();
-      const acc = vec3(0).toVar();
-      const eps2 = uSoftening.mul(uSoftening);
-
-      // All-pairs gravity, straight through 3D space — clusters on opposite
-      // sides of the dome pull along the chord, not the surface.
-      Loop(n, ({ i }: { i: any }) => {
-        const o = srcP.element(i);
-        const d = o.xyz.sub(pos);
-        const r2 = dot(d, d).add(eps2);
-        const w = uG.mul(o.w).div(r2.mul(r2.sqrt()));
-        acc.addAssign(d.mul(w));
-      });
-
-      // The entire dome — the post's four lines. Radial spring sticks bodies
-      // to the shell; the stiffer floor spring keeps them in the upper half.
-      const r = pos.length();
-      const rhat = pos.div(r.max(1e-6));
-      acc.subAssign(rhat.mul(r.sub(uShellR)).mul(uShellK));
-      If(pos.y.lessThan(0), () => {
-        acc.assign(acc.sub(vec3(0, pos.y.mul(uShellK).mul(uFloorK), 0)));
-      });
-
-      // Gentle stirring: a noise vector field with its radial component
-      // removed pushes particles along the shell surface, constantly
-      // reforming the dome without deforming it. The azimuthal breeze
-      // (zero at the pole) feeds just enough energy back to offset damping
-      // so the slow global rotation never dies out.
-      const fp = pos.mul(2.2);
-      const ft = uTime.mul(0.12);
-      const fv = vec3(
-        mx_noise_float(fp.add(vec3(ft, 0, 17.3))),
-        mx_noise_float(fp.add(vec3(31.7, ft, 5.1))),
-        mx_noise_float(fp.add(vec3(9.2, 23.4, ft))),
-      );
-      acc.addAssign(fv.sub(rhat.mul(dot(fv, rhat))).mul(uFlow));
-      const az = vec3(pos.z.negate(), 0, pos.x).div(r.max(1e-6));
-      acc.addAssign(az.mul(uSwirl));
-
-      // Pointer / VR controller penalty forces (one slot per hand + mouse).
-      const gains = [uPtrG.x, uPtrG.y, uPtrG.z];
-      for (let s = 0; s < FORCER_SLOTS; s++) {
-        const pd = uPtrPos[s].sub(pos);
-        const pr2 = dot(pd, pd).add(uPtrSoft.mul(uPtrSoft));
-        acc.addAssign(pd.mul(gains[s]).div(pr2.mul(pr2.sqrt())));
-      }
-
-      vel.assign(vel.add(acc.mul(uDt)).mul(uDamping));
-      const sp = vel.length();
-      If(sp.greaterThan(uMaxSpeed), () => {
-        vel.mulAssign(uMaxSpeed.div(sp));
-      });
-      pos.addAssign(vel.mul(uDt));
-      dstP.element(instanceIndex).assign(vec4(pos, mass));
-      dstV.element(instanceIndex).assign(vec4(vel, 0));
-    })().compute(n);
+  // Gravity is the blog post's Barnes-Hut octree pyramid, running as raw
+  // WebGPU compute on the renderer's own device. Three owns the pos/vel
+  // buffers (the sprite material reads them as instanced vertex data); the
+  // solver binds the same GPUBuffers into its pipelines, so physics and
+  // pixels share one memory and nothing is ever copied.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const backend = (renderer as any).backend;
+  if (!backend?.device) {
+    throw new Error('NBodyDome needs the WebGPU backend (renderer fell back to WebGL)');
   }
+  const device: GPUDevice = backend.device;
 
   function build() {
     n = params.count;
     const init = generateInitData(n);
-    posA = instancedArray(init.pos, 'vec4');
-    posB = instancedArray(init.pos.slice(), 'vec4');
-    velA = instancedArray(init.vel, 'vec4');
-    velB = instancedArray(init.vel.slice(), 'vec4');
-    stepAB = makeStep(posA, velA, posB, velB);
-    stepBA = makeStep(posB, velB, posA, velA);
-    copyBA = Fn(() => {
-      posA.element(instanceIndex).assign(posB.element(instanceIndex));
-      velA.element(instanceIndex).assign(velB.element(instanceIndex));
+    posArr = instancedArray(init.pos, 'vec4');
+    velArr = instancedArray(init.vel, 'vec4');
+
+    // No-op compute over both arrays so the backend allocates their
+    // GPUBuffers with STORAGE usage; the solver then binds those directly.
+    const touch = Fn(() => {
+      posArr.element(instanceIndex).assign(posArr.element(instanceIndex));
+      velArr.element(instanceIndex).assign(velArr.element(instanceIndex));
     })().compute(n);
+    renderer.compute(touch);
+    posBuf = backend.get(posArr.value).buffer;
+    velBuf = backend.get(velArr.value).buffer;
+    solver = new OctreeDomeSolver(device, n, posBuf, velBuf);
 
     const material = new THREE.SpriteNodeMaterial();
-    const p = posA.toAttribute();
-    const v = velA.toAttribute();
+    const p = posArr.toAttribute();
+    const v = velArr.toAttribute();
     material.positionNode = uCenter.add(p.xyz.mul(SCALE));
     const rad = uMinSize.max(uSizeScale.mul(p.w.pow(1 / 3)));
     material.scaleNode = rad.mul(2 * SCALE);
     // Color by speed as a fraction of the speed cap so the low->high ramp
     // always spans the actual speed range, regardless of how chill the
-    // physics defaults get. colorScale > 1 hits full color before the cap.
+    // physics defaults get. The squared response keeps ambient drift pinned
+    // near the slow color so pointer-stirred particles pop visibly orange.
     const speed = v.xyz.length();
-    const t = speed.div(uMaxSpeed.max(1e-6)).mul(uColorScale).saturate();
+    const t = speed.div(uMaxSpeed.max(1e-6)).mul(uColorScale).saturate().pow(2);
     const col = mix(uColLow, uColHigh, t);
     const d = uv().sub(0.5).length().mul(2);
     const a = smoothstep(1, 0, d);
@@ -305,29 +252,36 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
     scene.remove(sprite);
     sprite.material.dispose();
     sprite = null;
+    solver.dispose();
+    posBuf.destroy();
+    velBuf.destroy();
   }
 
   function reseed() {
     const init = generateInitData(n);
-    for (const [buf, data] of [[posA, init.pos], [posB, init.pos], [velA, init.vel], [velB, init.vel]] as const) {
-      buf.value.array.set(data);
-      buf.value.needsUpdate = true;
-    }
+    device.queue.writeBuffer(posBuf, 0, init.pos);
+    device.queue.writeBuffer(velBuf, 0, init.vel);
   }
 
   build();
 
   // ---------------- forcers ----------------
 
-  const ptrGains = [0, 0, 0];
+  // Per-slot forcer state, uploaded into the solver's uniforms each frame:
+  // x, y, z = sim-space position, w = gain.
+  const forcers: [number, number, number, number][] =
+    Array.from({ length: FORCER_SLOTS }, () => [0, 0, 0, 0]);
 
   function clearForcers() {
-    ptrGains[0] = ptrGains[1] = ptrGains[2] = 0;
+    for (const f of forcers) f[3] = 0;
   }
 
   function setForcer(slot: number, simPoint: THREE.Vector3, sign: number) {
-    uPtrPos[slot].value.copy(simPoint);
-    ptrGains[slot] = sign * params.strength * params.gravity * params.totalMass * params.pointerMassScale;
+    const f = forcers[slot];
+    f[0] = simPoint.x;
+    f[1] = simPoint.y;
+    f[2] = simPoint.z;
+    f[3] = sign * params.strength * params.gravity * params.totalMass * params.pointerMassScale;
   }
 
   const oc = new THREE.Vector3();
@@ -369,6 +323,7 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
       '32k': 32768,
       '64k': 65536,
       '128k': 131072,
+      '256k': 262144,
     },
   }).on('change', () => { teardown(); build(); });
   fSim.addBinding(params, 'steps', { min: 1, max: 8, step: 1, label: 'steps / frame' });
@@ -380,6 +335,7 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
   fPhys.addBinding(params, 'gravity', { min: 0, max: 0.000002, step: 0.00000002 });
   fPhys.addBinding(params, 'dt', { min: 0.001, max: 0.05, step: 0.0005, label: 'timestep' });
   fPhys.addBinding(params, 'softening', { min: 0.001, max: 0.5, step: 0.001, label: 'softening ε' });
+  fPhys.addBinding(params, 'theta', { min: 0.4, max: 1.4, step: 0.05, label: 'tree θ' });
   fPhys.addBinding(params, 'damping', { min: 0.9, max: 1.0, step: 0.0005 });
   fPhys.addBinding(params, 'maxSpeed', { min: 0.05, max: 5.0, step: 0.05 });
 
@@ -428,20 +384,8 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
   });
 
   function update() {
-    uPtrG.value.set(ptrGains[0], ptrGains[1], ptrGains[2]);
     if (params.paused) return;
-    uG.value = params.gravity;
-    uDt.value = params.dt;
-    uSoftening.value = params.softening;
-    uDamping.value = params.damping;
     uMaxSpeed.value = params.maxSpeed;
-    uShellK.value = params.shellK;
-    uShellR.value = params.shellR;
-    uFloorK.value = params.floorK;
-    uPtrSoft.value = params.pointerSoftening;
-    uFlow.value = params.flow;
-    uSwirl.value = params.swirl;
-    uTime.value += params.dt * params.steps;
     uSizeScale.value = params.sizeScale;
     uMinSize.value = params.minSize;
     uColorScale.value = params.colorScale;
@@ -449,10 +393,32 @@ export function createNBodyDome(renderer: THREE.WebGPURenderer, scene: THREE.Sce
     uColHigh.value.set(params.colorHigh);
     uBrightness.value = params.brightness;
 
-    for (let k = 0; k < params.steps; k++) {
-      renderer.compute(k % 2 === 0 ? stepAB : stepBA);
-    }
-    if (params.steps % 2 === 1) renderer.compute(copyBA);
+    simTime += params.dt * params.steps;
+    solver.writeParams({
+      count: n,
+      dt: params.dt,
+      gravity: params.gravity,
+      softening: params.softening,
+      theta: params.theta,
+      damping: params.damping,
+      shellR: params.shellR,
+      shellK: params.shellK,
+      floorK: params.floorK,
+      maxSpeed: params.maxSpeed,
+      flow: params.flow,
+      swirl: params.swirl,
+      time: simTime,
+      pointerSoftening: params.pointerSoftening,
+      forcers,
+    });
+
+    // Whole sim — tree rebuild + force/integrate — in one compute pass per
+    // substep, on the same queue Three renders from, so ordering is free.
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    for (let k = 0; k < params.steps; k++) solver.encode(pass);
+    pass.end();
+    device.queue.submit([enc.finish()]);
   }
 
   return { update, reseed, clearForcers, setForcer, intersectRay, simToWorld, center, params, pane };
